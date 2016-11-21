@@ -35,6 +35,7 @@ httpd_indexcgi.c -o index.cgi
  *   2576       4    2048    4628    1214 index.cgi.o
  */
 
+#define _GNU_SOURCE 1  /* for strchrnul */
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <errno.h>
@@ -51,6 +52,7 @@ httpd_indexcgi.c -o index.cgi
  * to elements. Edit stylesheet to your liking and recompile. */
 
 #define STYLE_STR \
+"<meta charset=\"UTF-8\">"                              "\n"\
 "<style>"                                               "\n"\
 "table {"                                               "\n"\
   "width:100%;"                                         "\n"\
@@ -75,19 +77,26 @@ httpd_indexcgi.c -o index.cgi
   "border-color:black;" /* black black black black; */  "\n"\
   "white-space:nowrap;"                                 "\n"\
 "}"                                                     "\n"\
+"td.nm {"                                               "\n"\
+  "max-width:1px;"                                      "\n"\
+  "white-space:nowrap;"                                 "\n"\
+  "text-overflow:ellipsis;"                             "\n"\
+  "overflow: hidden;"                                   "\n"\
+"}"                                                     "\n"\
 "tr.hdr { background-color:#eee5de; }"                  "\n"\
 "tr.o { background-color:#ffffff; }"                    "\n"\
 /* tr.e { ... } - for even rows (currently none) */         \
 "tr.foot { background-color:#eee5de; }"                 "\n"\
 "th.cnt { text-align:left; }"                           "\n"\
-"th.sz { text-align:right; }"                           "\n"\
+"th.sz { text-align:right;white-space:nowrap}"          "\n"\
 "th.dt { text-align:right; }"                           "\n"\
 "td.sz { text-align:right; }"                           "\n"\
 "td.dt { text-align:right; }"                           "\n"\
-"col.nm { width:98%; }"                                 "\n"\
-"col.sz { width:1%; }"                                  "\n"\
+"col.nm { width:97%; }"                                 "\n"\
+"col.sz { width:2%;white-space:nowrap; }"               "\n"\
 "col.dt { width:1%; }"                                  "\n"\
 "</style>"                                              "\n"\
+
 
 typedef struct dir_list_t {
 	char  *dl_name;
@@ -126,7 +135,7 @@ static void guarantee(int size)
 {
 	if (buffer + (BUFFER_SIZE-HEADROOM) - dst >= size)
 		return;
-	write(STDOUT_FILENO, buffer, dst - buffer);
+	if(!write(STDOUT_FILENO, buffer, dst - buffer)) exit(1);
 	dst = buffer;
 }
 
@@ -178,7 +187,44 @@ static void fmt_html(/*char *dst,*/ const char *name)
 		}
 	}
 }
+static void fmt_sz(unsigned long long n)
+{
+	const char units[] = {'B','K','M','G','T','P','E','Z','Y'};
+	int i = 0;
+	char buf[9];
+	char *p;
+	if (n<1024) {
+		p = buf + sizeof(buf) - 1;
+		*p = '\0';
+		do {
+			*--p = (n % 10) + '0';
+			n /= 10;
+		} while (n);
+		fmt_str(/*dst,*/ p);
+		return;
+	}
+	n *= 100;
+	while(n > 102400) {
+		n /= 1024;
+		i++;
+	}
+	if(i>=8 && n>=10) return;
 
+	p = buf + sizeof(buf) - 1;
+	*p = '\0';
+	*--p = units[i];
+	*--p = ' ';
+	*--p = (n % 10) + '0';
+	n/=10;
+	*--p = (n % 10) + '0';
+	n/=10;
+	*--p = '.';
+	while (n) {
+		*--p = (n % 10) + '0';
+		n /= 10;
+	}
+	fmt_str(/*dst,*/ p);
+}
 /* HEADROOM bytes are available after dst after this call */
 static void fmt_ull(/*char *dst,*/ unsigned long long n)
 {
@@ -221,20 +267,25 @@ int main(int argc, char *argv[])
 	unsigned long long size_total;
 	int odd;
 	DIR *dirp;
-	char *QUERY_STRING;
+	char *location;
 
-	QUERY_STRING = getenv("QUERY_STRING");
-	if (!QUERY_STRING
-	 || QUERY_STRING[0] != '/'
-	 || strstr(QUERY_STRING, "//")
-	 || strstr(QUERY_STRING, "/../")
-	 || strcmp(strrchr(QUERY_STRING, '/'), "/..") == 0
+	location = getenv("REQUEST_URI");
+	if (!location)
+		return 1;
+
+	/* drop URL arguments if any */
+	strchrnul(location, '?')[0] = '\0';
+
+	if (location[0] != '/'
+	 || strstr(location, "//")
+	 || strstr(location, "/../")
+	 || strcmp(strrchr(location, '/'), "/..") == 0
 	) {
 		return 1;
 	}
 
 	if (chdir("..")
-	 || (QUERY_STRING[1] && chdir(QUERY_STRING + 1))
+	 || (location[1] && chdir(location + 1))
 	) {
 		return 1;
 	}
@@ -271,14 +322,14 @@ int main(int argc, char *argv[])
 		"\r\n" /* Mandatory empty line after headers */
 		"<html><head><title>Index of ");
 	/* Guard against directories with &, > etc */
-	fmt_html(QUERY_STRING);
+	fmt_html(location);
 	fmt_str(
 		"</title>\n"
 		STYLE_STR
 		"</head>" "\n"
 		"<body>" "\n"
 		"<h1>Index of ");
-	fmt_html(QUERY_STRING);
+	fmt_html(location);
 	fmt_str(
 		"</h1>" "\n"
 		"<table>" "\n"
@@ -313,7 +364,7 @@ int main(int argc, char *argv[])
 			*dst++ = '/';
 		fmt_str("</a><td class=sz>");
 		if (S_ISREG(cdir->dl_mode))
-			fmt_ull(cdir->dl_size);
+			fmt_sz(cdir->dl_size);
 		fmt_str("<td class=dt>");
 		ptm = gmtime(&cdir->dl_mtime);
 		fmt_04u(1900 + ptm->tm_year); *dst++ = '-';
@@ -335,7 +386,7 @@ int main(int argc, char *argv[])
 	fmt_str(", directories: ");
 	fmt_ull(count_dirs - 1);
 	fmt_str("<th class=sz>");
-	fmt_ull(size_total);
+	fmt_sz(size_total);
 	fmt_str("<th class=dt>\n");
 	/* "</table></body></html>" - why bother? */
 	guarantee(BUFFER_SIZE * 2); /* flush */
