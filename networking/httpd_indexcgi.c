@@ -191,7 +191,7 @@ static void fmt_sz(unsigned long long n)
 {
 	const char units[] = {'B','K','M','G','T','P','E','Z','Y'};
 	int i = 0;
-	char buf[9];
+	char buf[10];
 	char *p;
 	if (n<1024) {
 		p = buf + sizeof(buf) - 1;
